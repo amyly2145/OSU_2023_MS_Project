@@ -1,0 +1,556 @@
+---
+title: "Biocreep Simulation"
+author: "Amy Ly"
+date: "4/12/2023"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# This package was sourced from https://osf.io/37vch/
+source ("informedTtest_functions.R") 
+
+library(tidyverse)
+library(gridExtra)
+library(metR)
+```
+
+
+#Define Custom Functions
+
+
+```{r}
+#corrected CohenH's value
+get_CohenH <- function(k1, k2, n1, n2, NImargin){
+  
+ h <- 2*asin(sqrt(((k1+k2)/(n1+n2)) - (NImargin/2)))-2*asin(sqrt(((k1+k2)/(n1+n2)) + (NImargin/2)))
+                                                    
+  return(h)
+}
+
+#corrected NI BF test
+
+NI_BFprop <- function (n1, n2, k1, k2, NImargin, prior.location, prior.scale)
+{
+  #modified SE equation to not be pooled proportion
+  SE <- sqrt (((k1/n1)*(1-(k1/n1))/n1) + ((k2/n2)*(1-(k2/n2))/n2))
+  
+  #signs are opposite from the code (higher propor is good for our case)
+  Z <- (((k2/n2) - (k1/n1)) + NImargin) / SE
+  
+  Res <- bf10_t (Z, n1 = n1, n2 = n2, independentSamples = T, prior.location = prior.location, 
+                prior.scale =prior.scale, prior.df = 1)
+  
+  BFmin_plus <- Res[[2]]/Res[[3]]
+  
+  return(BFmin_plus)
+}
+
+
+#extract a common legend for when we put all instructional plots on a grid
+get_only_legend <- function(plot) {
+    
+  # get tabular interpretation of plot
+  plot_table <- ggplot_gtable(ggplot_build(plot)) 
+    
+  #  Mark only legend in plot
+  legend_plot <- which(sapply(plot_table$grobs, function(x) x$name) == "guide-box") 
+                              
+  # extract legend
+  legend <- plot_table$grobs[[legend_plot]]
+                              
+  # return legend
+  return(legend) 
+}
+
+```
+
+
+## Case Study Traits
+
+* Have dichotomous data
+* 1 sided test at a significance level of 0.05
+* 2-sided 90% CI
+* power = 0.8 and is based on estimation that mortality rates are 5% in study population
+* sample size calculations require 650 patients in each arm
+* 90-day all-cause mortality determined by random-effects logistic regression model
+* Test for NI: the upper limit of 95% CI of estimated mortality in each group should not be more than 3% above the point estimate of the group with the lowest mortality
+* Test for difference: LR test of model with and without antibiotic treatment
+* NI figures based on risk differences of the treatment strategy compared to control arm
+
+
+Given the following information:
+
+```{r}
+
+n1 <- 656  # n for group 1 (beta-lactam)
+n2 <- 739  # n for group 2 (beta-lactam-macrolide)
+n3 <- 888 # n for group 1 (fluoroquinolone)
+k1 <- 59  # mortality count in group 1 (beta-lactam)
+k2 <- 82  # mortality count in group 2 (beta-lactam-macrolide)
+k3 <- 78  # mortality count in group 1 (fluoroquinolone)
+
+NImargin <- 0.03   # Non-inferiority margin in proportion points
+
+```
+
+
+Bayes Factor Analysis for beta-lactam vs beta-lactam-fluoroquinone
+
+
+```{r}
+
+SE <- sqrt (((k1/n1)*(1-(k1/n1))/n1) + ((k3/n3)*(1-(k3/n3))/n3))
+  
+Z <- (((k3/n3) - (k1/n1)) + NImargin) / SE
+
+xlim <- range(c(-1, 1))
+xx <- seq(xlim[1], xlim[2], length.out = 400)
+yy <- posterior_t(delta = xx, t = Z, n1 = n3, n2 = n1,
+                  independentSamples = TRUE,
+                  prior.location = -get_CohenH(k1, k3, n1, n3, NImargin), 
+                  prior.scale = 1/sqrt(2),
+                  prior.df = 1)
+priorLine <- dcauchy(x = xx, location = -get_CohenH(k1, k3, n1, n3, NImargin), scale = 1/sqrt(2))
+  
+
+## plot posterior based on default prior
+
+plot_df <- data.frame(xx, yy, priorLine)
+names(plot_df) <- c("Effect Size", "Posterior", "Prior")
+
+ggplot(plot_df, aes(x = xx)) + 
+  geom_line(aes(y=yy, color = "Posterior"), size=1) + 
+  geom_line(aes(y=priorLine, color = "Prior"), size = 1) + 
+  labs(title = "Posterior Distribution with Default Prior", 
+       subtitle = expression(paste(BF["+"]["-"],"(", d, "; ", 0.1059, ", ", 1/sqrt(2), ", ",1, ") = 28.87")),
+       y = "Density", 
+       x = "Effect size", 
+       colour = "Distribution") + 
+  scale_color_manual(values=c("#009E73","#0072B2")) +
+  theme(legend.position = c(0.85, 0.75))
+
+```
+
+Reanalysis Comparison:
+
+```{r}
+#beta-lactam vs beta-lactam-macrolide
+NI_BFprop (n1, n2, k1, k2, NImargin, 
+           prior.location = -get_CohenH(k1, k2, n1, n2, NImargin), 
+           prior.scale = 1/sqrt(2))     # Non-inferiority BF = 1307.764
+
+#beta-lactam vs beta-lactam-fluoroquinolone
+NI_BFprop (n1, n3, k1, k3, NImargin, 
+           prior.location = -get_CohenH(k1, k3, n1, n3, NImargin), 
+           prior.scale = 1/sqrt(2))     # Non-inferiority BF = 39.07749
+```
+The values that resulted do not match what was reported (1307.76 and 39.07, respectively) in the Ravenzwaaij paper. 
+
+
+## Visualizations for Report
+
+
+### Frequentist Analysis for beta-lactam vs beta-lactam-fluoroquinone
+
+```{r}
+
+
+n1 <- 656  # n for group 1 (beta-lactam)
+n2 <- 739  # n for group 2 (beta-lactam-macrolide)
+n3 <- 888 # n for group 1 (fluoroquinolone)
+k1 <- 59  # mortality count in group 1 (beta-lactam)
+k2 <- 82  # mortality count in group 2 (beta-lactam-macrolide)
+k3 <- 78  # mortality count in group 1 (fluoroquinolone)
+
+p1 <- k1/n1
+p2 <- k2/n2
+p3 <- k3/n3
+
+NImargin <- 0.03   # Non-inferiority margin in proportion points
+
+#perform approximate Z test to see if difference in treatment and control proportions is < - M
+
+PooledProp <- (k1+k3) / (n1+n3)
+
+#calculate z-stat for testing difference in 2 population proportions. 
+# H_0: p3 -p1 > -0.03
+
+Z <- ((p1-p3) - 0.03)/(sqrt(PooledProp*(1-PooledProp)*((1/n1) + (1/n3))))
+
+pnorm(Z)
+
+# since p-value is significant, this indicates strong evidence in favor of the H_A, which is support that drugs are NI
+
+# calculate 95% CI
+
+z_ref <- c(1.645, 1.96)
+
+CI <- c("90%", "95%")
+
+Group <- c("BM v B", "BM v B", "F v B", "F v B" )
+
+LB <- c((p2-p1) - z_ref[1]*sqrt((p1*(1-p1)/n1) + (p2*(1-p2)/n2)), 
+        (p2-p1) - z_ref[2]*sqrt((p1*(1-p1)/n1) + (p2*(1-p2)/n2)),
+        (p3-p1) - z_ref[1]*sqrt((p1*(1-p1)/n1) + (p3*(1-p3)/n3)),        
+        (p3-p1) - z_ref[2]*sqrt((p1*(1-p1)/n1) + (p3*(1-p3)/n3)))
+
+UB <- c((p2-p1) + z_ref[1]*sqrt((p1*(1-p1)/n1) + (p2*(1-p2)/n2)), 
+        (p2-p1) + z_ref[2]*sqrt((p1*(1-p1)/n1) + (p2*(1-p2)/n2)),
+        (p3-p1) + z_ref[1]*sqrt((p1*(1-p1)/n1) + (p3*(1-p3)/n3)),
+        (p3-p1) + z_ref[2]*sqrt((p1*(1-p1)/n1) + (p3*(1-p3)/n3)))
+
+pt_est <- c((p2-p1), (p2-p1), (p3-p1), (p3-p1))
+
+
+
+CI_data <- data.frame(Group, z_ref, CI, pt_est, LB, UB)
+
+#Create the NI CI plot
+
+ggplot(data=CI_data, aes(y=nrow(CI_data):1)) +
+                geom_errorbar(aes(xmax = UB, xmin = LB, color=Group)) +
+                geom_vline(xintercept = -0.03, 
+                           color="#661100", 
+                           lwd=0.5, 
+                           linetype="dashed") +
+                geom_point(aes(y=nrow(CI_data):1, x = pt_est), shape=1, size=3) +
+                labs(title = "NI Confidence Interval Analysis",
+                     y = "", x = "Effect Size (Treatment v Beta-Lactam)") +
+                geom_text(aes(label = CI, colour = Group, 
+                              x = UB + 0.0005, y = nrow(CI_data):1), hjust = -.1, size = 3) + 
+                scale_color_manual(values=c("#009E73","#0072B2")) +
+                theme(axis.text.y = element_blank(), axis.ticks = element_blank())
+   
+
+```
+
+The negative point estimate favors the fluroquinone treatment. The 90% CI is completely above prespecified -c, so we can say that NI of fluoroquinone is demonstrated
+
+
+### Prior vs Posterior Distribution Plots
+
+
+Simulation for varying prior parameters
+
+```{r}
+
+n1 <- 656  # n for group 1 (beta-lactam)
+n3 <- 888  # n for group 1 (fluoroquinolone)
+k1 <- 59   # mortality count in group 1 (beta-lactam)
+k3 <- 78   # mortality count in group 3 (fluorquinonlone)
+
+prior.location <- seq(-1, 1, by = 0.01)
+prior.scale <- seq(0.01, 1, by = 0.01)
+
+NImargin <- 0.03
+
+simulation_params <- list(
+  prior.location = prior.location, 
+  prior.scale = prior.scale
+)
+
+df <- cross_df(simulation_params)
+
+df_BF <- df %>% 
+    mutate(
+    BF = unlist(pmap(list(k1 = k1, k2=k3, n1=n1, n2 = n3, 
+                          NImargin = NImargin, 
+                          prior.location = prior.location, 
+                          prior.scale = prior.scale), NI_BFprop))
+    ) 
+  
+summary(df_BF)
+
+```
+
+
+```{r}
+
+ggplot(data = df_BF, aes(x = prior.location, y = prior.scale))+
+  metR::geom_contour2(aes(z = log(BF), 
+                          label = stat(level)), 
+                      label_size = 3,
+                      label_color = "#6699CC",
+                      breaks = seq(-3, 10, 0.5)) + 
+  labs(title = "Contour Plot of log(BF)",
+       y = "Prior Scale", 
+       x = "Prior Location")
+
+```
+
+Simulation for varying mortality counts
+
+
+```{r}
+
+#parameters for varying mortality count
+k1 = seq(1, 0.25*n1, by = 10)
+k3 = seq(1, 0.25*n2, by = 10)
+ 
+NImargin <- 0.03
+n1 <- 656
+n3 <- 888
+  
+simulation_params2 <- list(
+  k1 = k1,
+  k3 = k3
+)
+
+#cannot take sqrt(negative numbers), so set the CohenH value to 0 if result is NaN
+
+df2 <- cross_df(simulation_params2) %>% 
+  mutate(CohenH = ifelse(is.na(get_CohenH(k1, k3, n1, n3, NImargin)), 0, get_CohenH(k1, k3, n1, n3, NImargin))
+         )
+
+df_BF2 <- df2 %>% 
+  mutate(
+    BF = unlist(pmap(list(k = k1, k2 = k3, n1=n1, n2 = n3, 
+                          NImargin = NImargin, 
+                          prior.location = -CohenH, 
+                          prior.scale = 1/sqrt(2)), NI_BFprop)), 
+    delta = (k3/n3)- (k1/n1), 
+    Z = (((k3/n3) - (k1/n1)) + NImargin)/sqrt(((k1/n1)*(1-(k1/n1))/n1) + ((k3/n3)*(1-(k3/n3))/n3))
+    ) 
+  
+summary(df_BF2)
+
+```
+
+
+Visual plots
+
+
+```{r}
+
+
+ggplot(data = df_BF2, aes(x = k1, y = k3))+
+  metR::geom_contour2(aes(z = log(BF), 
+                          label = stat(level)), 
+                      label_size = 3,
+                      label_color = "#332288",
+                      breaks = seq(-20, 20, 3)) +
+    metR::geom_contour2(aes(z = delta, 
+                          label = stat(level)),
+                        color = "#117733",
+                      label_size = 3,
+                      label_color = "#117733",
+                      breaks = seq(-1, 1, 0.05))+ 
+  labs(title = "Contour Plot of log(BF)",
+       y = "Mortality Count in Fluoroquinolone Group", 
+       subtitle = "Overlapped with Contour Plot of Effect Size in Green",
+       x = "Mortality Count in Beta-Lactam Group")
+
+ggplot(data = df_BF2, aes(x = k1, y = k3))+
+  metR::geom_contour2(aes(z = log(BF), 
+                          label = stat(level)), 
+                      label_size = 3,
+                      label_color = "#332288",
+                      breaks = seq(-20, 20, 3)) +
+    metR::geom_contour2(aes(z = Z, 
+                          label = stat(level)),
+                        color = "#882255",
+                      label_size = 3,
+                      label_color = "#882255",
+                      breaks = seq(-6, 6, 2))+ 
+  labs(title = "Contour Plot of log(BF)",
+       y = "Mortality Count in Fluoroquinolone Group",
+       subtitle = "Overlapped with Contour Plot of Z-Statistic in Purple", 
+       x = "Mortality Count in Beta-Lactam Group")
+  
+```
+
+Fill contour based on Frequentist and BF decision for NI
+
+```{r}
+ggplot(data = df_BF2, aes(x = k1, y = k3))+
+  metR::geom_contour2(aes(z = log(BF), 
+                          label = stat(level)), 
+                      label_size = 3,
+                      label_color = "#332288",
+                      breaks = seq(-20, 26, 2)) +
+  metR::geom_contour2(aes(z = Z, 
+                          label = stat(level)),
+                        color = "#882255",
+                      label_size = 3,
+                      label_color = "#882255",
+                      breaks = seq(-12, 8, 2))+ 
+  metR::geom_contour_fill(aes(z = Z), 
+                          breaks = seq(2, 10), 
+                          alpha = 0.2, 
+                          linetype = "blank") +
+  labs(title = "Contour Plot of log(BF)",
+       y = "Mortality Count in Treatment Group",
+       subtitle = "Overlapped with Contour Plot of Z-Statistic in Purple", 
+       x = "Mortality Count in Control Group") +
+  theme(legend.position="none")
+
+ggplot(data = df_BF2, aes(x = k1, y = k3))+
+  metR::geom_contour2(aes(z = log(BF), 
+                          label = stat(level)), 
+                      label_size = 3,
+                      label_color = "#332288",
+                      breaks = seq(-20, 26, 2)) +
+  metR::geom_contour2(aes(z = Z, 
+                          label = stat(level)),
+                        color = "#882255",
+                      label_size = 3,
+                      label_color = "#882255",
+                      breaks = seq(-12, 8, 2)) + 
+  metR::geom_contour_fill(aes(z = log(BF)), 
+                          breaks = seq(1, 26), 
+                          alpha = 0.2, 
+                          linetype = "blank") +
+  labs(title = "Contour Plot of log(BF)",
+       y = "Mortality Count in Treatment Group",
+       subtitle = "Overlapped with Contour Plot of Z-Statistic in Purple", 
+       x = "Mortality Count in Control Group") +
+  theme(legend.position="none")
+
+
+```
+Zooming into the lower left corner
+
+```{r}
+
+ggplot(data = df_BF2, aes(x = k1, y = k3))+
+  metR::geom_contour2(aes(z = log(BF), 
+                          label = stat(level)), 
+                      label_size = 3,
+                      label_color = "#332288",
+                      breaks = seq(-20, 20, 3)) +
+  scale_fill_gradientn(colours = c("blue","blue", "blue", "blue", "blue")) +
+  metR::geom_contour_fill(aes(z = Z),
+                      breaks = seq(2,6),
+                      alpha = 0.2, 
+                      linetype = "blank") +
+  labs(title = "Decision Boundaries on Contour Plot of log(BF)",
+       y = "Mortality Count in Fluoroquinolone Group",
+       x = "Mortality Count in Beta-Lactam Group") +
+  theme(legend.position="none")
+
+```
+
+Zooming into the lower left corner, NO coloring
+
+```{r}
+
+ggplot(data = df_BF2, aes(x = k1, y = k3))+
+  metR::geom_contour2(aes(z = log(BF), 
+                          label = stat(level)), 
+                      label_size = 3,
+                      label_color = "#332288",
+                      breaks = seq(-20, 20, 3)) +
+  scale_fill_gradientn(colours = c("#42F0D9","#42F0D9", "#42F0D9", "#42F0D9"))+
+  metR::geom_contour_fill(aes(z = log(BF)), 
+                          breaks = seq(0, 20), 
+                          alpha = 0.3, 
+                          linetype = "blank") +
+  labs(title = "Decision Boundaries on Contour Plot of log(BF)",
+       y = "Mortality Count in Fluoroquinolone Group",
+       x = "Mortality Count in Beta-Lactam Group") +
+  theme(legend.position="none")
+
+```
+
+Change the breaks
+
+```{r}
+
+ggplot(data = df_BF2, aes(x = k1, y = k3))+
+  metR::geom_contour2(aes(z = log(BF), 
+                          label = stat(level)), 
+                      label_size = 3,
+                      label_color = "#332288",
+                      breaks = seq(-20, 24, 3)) +
+  scale_fill_gradientn(colours = c("#42F0D9","#42F0D9", "#42F0D9", "#42F0D9"))+
+  metR::geom_contour_fill(aes(z = log(BF)), 
+                          breaks = seq(0, 22), 
+                          alpha = 0.3, 
+                          linetype = "blank") +
+  labs(title = "Contour Plot of log(BF) + Decision Boundaries",
+       y = "Mortality Count in Treatment Group",
+       subtitle = "Colored Decision Boundaries", 
+       x = "Mortality Count in Control Group") +
+  theme(legend.position="none")
+
+
+```
+
+
+
+Plot Instructional Visuals of Posterior vs Prior Distributions
+
+
+```{r}
+#create function to automate ggplots
+
+post_plot <- function(prior.location, prior.scale){
+  xlim <- range(c(-1, 1))
+  xx <- seq(xlim[1], xlim[2], length.out = 400)
+  yy <- posterior_t(delta = xx, t = Z, n1 = n3, n2 = n1,
+                  independentSamples = TRUE,
+                  prior.location = -get_CohenH(k1, k3, n1, n3, NImargin), 
+                  prior.scale = 1/sqrt(2),
+                  prior.df = 1)
+
+  priorLine <- dcauchy(x = xx, location = prior.location, scale = prior.scale)
+  
+  plot_df <- data.frame(xx, yy, priorLine)
+  names(plot_df) <- c("Effect Size", "Posterior", "Prior")
+
+  gplot <- ggplot(plot_df, aes(x = xx)) + 
+    geom_line(aes(y=yy, color = "Posterior"), size=1) + 
+    geom_line(aes(y=priorLine, color = "Prior"), size = 1) +
+    ylim(0, 8)+
+    labs(y = "Density",
+        x = "Effect size",
+        subtitle = paste("Prior loc:", prior.location,", Prior scale:", prior.scale)) + 
+    scale_color_manual(values=c("#009E73","#0072B2")) +
+    theme(legend.position="none", 
+          text = element_text(size = 8))
+  
+  return(gplot)
+}
+
+
+n1 <- 656  # n for group 1 (beta-lactam)
+n3 <- 888  # n for group 1 (fluoroquinolone)
+k1 <- 59   # mortality count in group 1 (beta-lactam)
+k3 <- 78   # mortality count in group 3 (fluorquinonlone)
+
+SE <- sqrt (((k1/n1)*(1-(k1/n1))/n1) + ((k3/n3)*(1-(k3/n3))/n3))
+  
+Z <- (((k3/n3) - (k1/n1)) + NImargin) / SE
+
+prior.location <- c(-0.75, 0, 0.5)
+prior.scale <- c(0.05, 0.15, 0.5)
+
+simulation_params3 <- list(
+  prior.location = prior.location, 
+  prior.scale = prior.scale
+)
+
+df3 <- cross_df(simulation_params3)
+
+p <- list()
+
+for(i in 1:nrow(df3)){
+  p[[i]] <- post_plot(df3$prior.location[i], df3$prior.scale[i])
+}
+
+
+#create a plot so that the legend can be extracted out
+plot_legend <- post_plot(df3$prior.location[1], df3$prior.scale[1])+
+              theme(legend.position = "right", )
+
+legend <- get_only_legend(plot_legend)
+
+do.call(grid.arrange,list(grobs = p, 
+                          top = "Posterior vs Prior Comparison", 
+                          right = legend))
+
+
+
+```
